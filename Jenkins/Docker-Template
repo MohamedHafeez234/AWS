@@ -1,0 +1,44 @@
+pipeline {
+    agent any
+    tools {
+        maven "LocalMVN"
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+              withCredentials([string(credentialsId: 'GitHub_Token', variable: 'github_token')]) {
+                checkout([$class: 'GitSCM',
+                          branches: [[name: '*/master']],
+                      extensions: [[$class: 'CleanCheckout']],
+                      userRemoteConfigs: [[url: 'https://' + env.github_token + '@' + 'github.com/sk617/WebApp.git']]
+             ])
+              }
+            }
+        }
+        stage('Build') {
+            steps {
+                // Run Maven on a Unix agent.
+                sh "mvn -Dmaven.test.failure.ignore=true clean package"
+            }
+        }
+        stage('docker build & push') {
+          steps {
+            withCredentials([usernamePassword(credentialsId: 'dockerhubID', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
+            sh 'docker build -t webapp-image:v1 .'
+            sh 'docker tag webapp-image:v1 ' +  USERNAME + '/webapp-image:v1'
+            sh 'docker login -u ' + USERNAME + ' -p ' + PASSWORD
+            sh 'docker push ' + USERNAME + '/webapp-image:v1'
+            sh 'docker rmi -f $(docker images -a -q ' + USERNAME + '/webapp-image:v1)'
+            }
+          }
+        }
+        stage('Deploy app on K8s') {
+          steps{
+            withKubeConfig([credentialsId: 'my-AKS-cred']) {
+              sh 'kubectl apply -f $JENKINS_HOME/workspace/webapp-deployment.yml'
+              sh 'kubectl apply -f $JENKINS_HOME/workspace/webapp-service.yml'
+            }
+          }
+        }
+    }
+}
