@@ -2,48 +2,62 @@
 import sys, os
 
 workflow_script_path = os.getenv("WORKER_SCRIPT_PATH", "workflow-scripts/")
-sys.path.append(workflow_script_path + "database/")
-
+sys.path.append(workflow_script_path + "database/rds")
+logger = LoggerSetup(loggerName=str(__file__), loggingLevel="debug").getLogger()
 import json
-
 from common.logger import LoggerSetup
 from common.utilities import (
     getinput,
     wait_until_instance_active,
     validate_db_upgrade,
+    check_route53_for_rds_dns,
     )
-logger = LoggerSetup(loggerName=str(__file__), loggingLevel="debug").getLogger()
 
 def handler(input, *args):
     try:
-        input = json.loads(input)
-        db_instance_identifier, region,target_engine_version, new_parameter_group_name,replica_db_identifier = getinput(input)
+        db_instance_identifier, region,target_engine_version, new_parameter_group_name,replica_db_identifier,dns_record_name = getinput(input)
         stage_input = json.loads(args[0])
         if stage_input["Result"] == True:
             while True:
-                response_message=wait_until_instance_active(db_instance_identifier,region)
-                if response_message == True:
-                    logger.info(f"Instance -  {db_instance_identifier} is Active.")
-                    response=validate_db_upgrade(replica_db_identifier,target_engine_version,region)
+                response=wait_until_instance_active(replica_db_identifier)
+                if response:
+                    logger.info(f"Instance -  {replica_db_identifier} is Active.")
+                    response=validate_db_upgrade(replica_db_identifier,target_engine_version)
                     if response == target_engine_version:
-                        return {
+                        response2=check_route53_for_rds_dns(dns_record_name,db_instance_identifier,replica_db_identifier)
+                        if response2 == True:
+                            logger.info("The RDS Endpoint is flipped")
+                            return {
                             "output": {
-                                "success": "SUCCESSFUL",
-                                "message": "Healthy Instance Post Upgrade.",
+                                "success": "SUCCESSFULL",
+                                "message": "Healthy Instance Post Upgrade and DNS flipped Successfully",
                             },
                             "nextStageInput": {"Result": True},
-                        }
+                            }
+                        elif response2 == "In-progress":
+                            logger.info("The RDS Endpoint is not flipped yet")
+                            return {
+                            "output": {
+                                "success": "INPROGRESS",
+                                "message": "Upgrade is Successful and DNS is not flipped yet.",
+                            },
+                            "nextStageInput": {},
+                            }
+                    else:
+                        return {
+                            "output": {
+                                "success": "FAILED",
+                                "message": "Upgrade to Target version was unsuccessful.",
+                            },
+                            "nextStageInput": {"Result": False},
+                            }
 
     except Exception as error:
         logger.error(error, exc_info=True)
         return {
             "output": {
                 "success": "FAILED",
-                "message": "Caught an exception.",
+                "message": "error : " + str(error),
             },
             "nextStageInput": {"Result": False},
         }
-
-
-
-
